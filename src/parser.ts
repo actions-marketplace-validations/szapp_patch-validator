@@ -7,9 +7,9 @@ import externals from './externals.js'
 import symbols from './symbols.js'
 import * as io from '@actions/io'
 import * as tc from '@actions/tool-cache'
-import * as glob from '@actions/glob'
 import fs from 'fs'
-import path, { posix } from 'path'
+import { trueCasePathSync } from 'true-case-path'
+import { posix } from 'path'
 
 const wildcards: RegExp = /\*|\?/
 
@@ -44,6 +44,7 @@ export class Parser {
     this.patchName = patchName.toUpperCase()
     this.filepath = normalizePath(filepath)
     this.workingDir = normalizePath(workingDir)
+    if (this.workingDir.length > 0 && !this.workingDir.endsWith('/')) this.workingDir += '/'
     this.exists = fs.existsSync(this.filepath)
     this.filename = posix.basename(this.filepath)
     const baseName = posix.basename(this.filepath, posix.extname(this.filepath)).toUpperCase()
@@ -89,7 +90,7 @@ export class Parser {
    */
   private stripPath(filepath: string): { fullPath: string; relPath: string } {
     const fullPath = normalizePath(filepath)
-    const relPath = fullPath.replace(this.workingDir, '').replace(/^\//, '')
+    const relPath = fullPath.replace(this.workingDir, '')
     return { fullPath, relPath }
   }
 
@@ -163,14 +164,12 @@ export class Parser {
     if (this.type !== 'CONTENT') return
 
     let symbols: string[] = []
-    let repoUrl: string = ''
     let srcPath: string = ''
     const tmpPath = posix.join(process.env['RUNNER_TEMP'] ?? '', '.patch-validator-special')
 
     switch (pattern.toLowerCase()) {
       case 'ikarus':
-        // Download Ikarus from the official repository (caution: not the compatibility version)
-        repoUrl = 'https://github.com/Lehona/Ikarus/archive/refs/heads/gameversions.tar.gz'
+        console.log('Requesting Ikarus')
         srcPath = posix.join(tmpPath, 'Ikarus-gameversions', `Ikarus_G${this.version}.src`)
 
         // Provisionally add Ninja-specific compatibility symbols
@@ -196,8 +195,7 @@ export class Parser {
         ]
         break
       case 'lego':
-        // Download LeGo from the official repository (caution: not the compatibility version)
-        repoUrl = 'https://github.com/Lehona/LeGo/archive/refs/heads/gameversions.tar.gz'
+        console.log('Requesting LeGo')
         srcPath = posix.join(tmpPath, 'LeGo-gameversions', `Header_G${this.version}.src`)
 
         // Provisionally add Ninja-specific compatibility symbols
@@ -205,14 +203,6 @@ export class Parser {
         break
       default:
         return
-    }
-
-    // Download the repository
-    if (!fs.existsSync(srcPath)) {
-      const archivePath = await tc.downloadTool(repoUrl)
-      await io.mkdirP(tmpPath)
-      await tc.extractTar(archivePath, tmpPath)
-      await io.rmRF(archivePath)
     }
 
     // Parse the files
@@ -235,12 +225,20 @@ export class Parser {
    * @throws An error if wildcards are used in the filepath.
    */
   protected async parseSrc(filepath: string, root: boolean = false, exclude: boolean = false): Promise<void> {
-    const { fullPath } = this.stripPath(filepath)
-    if (!fs.existsSync(fullPath)) return
+    const { relPath } = this.stripPath(filepath)
 
+    // Check if file exists and correct case
+    let fullPath: string
+    try {
+      fullPath = normalizePath(trueCasePathSync(relPath))
+    } catch {
+      return
+    }
+
+    console.log(`Reading ${relPath}`)
     const srcRootPath = posix.dirname(fullPath)
     const input = fs.readFileSync(fullPath, 'ascii')
-    let lines = input.split(/\r?\n/).filter((line) => line.trim() !== '')
+    const lines = input.split(/\r?\n/).filter((line) => line.trim() !== '')
 
     // Iterate over the lines in the file
     while (lines.length > 0) {
@@ -248,13 +246,7 @@ export class Parser {
       const subfile = normalizePath(line)
       const fullPath = posix.join(srcRootPath, subfile)
 
-      if (wildcards.test(line)) {
-        if (!exclude) throw new Error('Wildcards are not supported')
-        const nativeSrcRootPath = path.resolve(srcRootPath) + path.sep
-        const resolved = await glob.create(fullPath).then((g) => g.glob().then((f) => f.map((h) => h.replace(nativeSrcRootPath, ''))))
-        lines = resolved.concat(lines)
-        continue
-      }
+      if (wildcards.test(line)) throw new Error('Wildcards are not supported')
 
       const ext = posix.extname(subfile).toLowerCase()
       switch (ext) {
@@ -275,14 +267,22 @@ export class Parser {
    *
    * @param filepath - The path of the file to parse.
    * @param exclude - Indicates whether the file is not part of the patch.
-   * @throws Error if wildcards are used in the filepath.
    */
   protected parseD(filepath: string, exclude: boolean = false): void {
-    const { fullPath, relPath } = this.stripPath(filepath)
-    if (!fs.existsSync(fullPath)) return
+    const { relPath } = this.stripPath(filepath)
+
+    // Check if file exists and correct case
+    let fullPath: string
+    try {
+      fullPath = normalizePath(trueCasePathSync(relPath))
+    } catch {
+      return
+    }
 
     if (this.filelist.includes(relPath)) return
     this.filelist.push(relPath)
+
+    console.log(`Parsing ${relPath}`)
 
     const input = fs.readFileSync(fullPath, 'ascii')
     this.parseStr(input, exclude ? '' : relPath)
@@ -304,6 +304,30 @@ export class Parser {
     // Collect symbol tables
     const visitor = new SymbolVisitor(filename, this.symbolTable, filename ? this.referenceTable : undefined)
     visitor.visit(tree)
+  }
+
+  /**
+   * Download special
+   */
+  public static async downloadSpecial(): Promise<void> {
+    // istanbul ignore next
+    const tmpPath = posix.join(process.env['RUNNER_TEMP'] ?? '', '.patch-validator-special')
+
+    // Download Ikarus and LeGo from the official repositories (caution: not the compatibility versions)
+    const repoUrls = [
+      'https://github.com/Lehona/Ikarus/archive/refs/heads/gameversions.tar.gz',
+      'https://github.com/Lehona/LeGo/archive/refs/heads/gameversions.tar.gz',
+    ]
+
+    console.log('Downloading Ikarus and LeGo')
+    await Promise.all(
+      repoUrls.map(async (repoUrl) => {
+        const archivePath = await tc.downloadTool(repoUrl)
+        await io.mkdirP(tmpPath)
+        await tc.extractTar(archivePath, tmpPath)
+        await io.rmRF(archivePath)
+      })
+    )
   }
 
   /**
@@ -362,7 +386,7 @@ export class Parser {
    */
   public validateOverwrites(): void {
     if (this.type !== 'CONTENT') return
-    // See: https://ninja.szapp.de/s/src/data/symbols.asm
+    // See: https://github.com/szapp/Ninja/blob/master/src/data/symbols.asm
     const illegal = [
       'INIT_GLOBAL',
       'INITPERCEPTIONS',

@@ -12,23 +12,23 @@ jest.mock('@actions/core', () => {
 
 import { Parser } from '../src/parser.js'
 import fs from 'fs'
+import tcp from 'true-case-path'
 import * as io from '@actions/io'
-import * as tc from '@actions/tool-cache'
-import * as glob from '@actions/glob'
 import { posix } from 'path'
 import os from 'os'
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+let consoleLogMock: jest.SpiedFunction<typeof console.log>
 let fsExistsSyncMock: jest.SpiedFunction<typeof fs.existsSync>
 let fsReadFileSyncMock: jest.SpiedFunction<typeof fs.readFileSync>
-let ioMkdirPMock: jest.SpiedFunction<typeof io.mkdirP>
-let ioRmRFMock: jest.SpiedFunction<typeof io.rmRF>
-let tcDownloadToolMock: jest.SpiedFunction<typeof tc.downloadTool>
-let tcExtractTarMock: jest.SpiedFunction<typeof tc.extractTar>
+let trueCasePathSyncMock: jest.SpiedFunction<typeof tcp.trueCasePathSync>
 
 describe('Parser', () => {
   beforeEach(() => {
+    consoleLogMock = jest.spyOn(console, 'log').mockImplementation()
     fsExistsSyncMock = jest.spyOn(fs, 'existsSync')
     fsReadFileSyncMock = jest.spyOn(fs, 'readFileSync')
+    trueCasePathSyncMock = jest.spyOn(tcp, 'trueCasePathSync')
   })
 
   describe('constructor', () => {
@@ -41,7 +41,7 @@ describe('Parser', () => {
       const parser = new Parser(patchName, filepath, workingDir)
 
       expect(parser.filepath).toBe(filepath)
-      expect(parser.workingDir).toBe(workingDir)
+      expect(parser.workingDir).toBe(workingDir + '/')
       expect(parser.exists).toBe(false)
       expect(parser.filename).toBe('conTENT_g1.src')
       expect(parser.type).toBe('CONTENT')
@@ -136,12 +136,16 @@ describe('Parser', () => {
       } as unknown as Parser
 
       fsExistsSyncMock.mockReturnValue(false).mockReturnValueOnce(true)
+      trueCasePathSyncMock.mockImplementation(() => {
+        throw new Error('ENOENT')
+      })
       fsReadFileSyncMock.mockReturnValue('').mockReturnValueOnce('test.d\n')
 
       const result = await Parser.from(patchName, basePath, workingDir)
       expect(result).toHaveLength(1)
       expect(result[0]).toMatchObject(oneParser)
-      expect(fsExistsSyncMock).toHaveBeenCalledTimes(candidates.length + 1)
+      expect(fsExistsSyncMock).toHaveBeenCalledTimes(candidates.length)
+      expect(trueCasePathSyncMock).toHaveBeenCalledTimes(1)
       candidates.forEach((candidate) => {
         expect(fsExistsSyncMock).toHaveBeenCalledWith(candidate)
       })
@@ -191,7 +195,11 @@ describe('Parser', () => {
       const parseD = jest.spyOn(parser as any, 'parseD').mockImplementation()
       const parseSrc = jest.spyOn(parser as any, 'parseSrc')
 
-      fsExistsSyncMock.mockReturnValue(false).mockReturnValueOnce(true)
+      trueCasePathSyncMock
+        .mockImplementation(() => {
+          throw new Error('ENOENT')
+        })
+        .mockImplementationOnce((path) => '/path/to/' + String(path))
       fsReadFileSyncMock.mockReturnValue('sub\\file.d\nrecurse.src\n')
 
       await parser['parseSrc'](filepath)
@@ -209,7 +217,7 @@ describe('Parser', () => {
       const parseD = jest.spyOn(parser as any, 'parseD')
       const parseSrc = jest.spyOn(parser as any, 'parseSrc')
 
-      fsExistsSyncMock.mockReturnValue(true)
+      trueCasePathSyncMock.mockImplementation((path) => String(path))
       fsReadFileSyncMock.mockReturnValue('sub\\file.txt\n')
 
       await parser['parseSrc'](filepath, true)
@@ -223,7 +231,9 @@ describe('Parser', () => {
       const filepath = '/path/to/file.src'
       const parser = new Parser(patchName, filepath)
 
-      fsExistsSyncMock.mockReturnValue(false)
+      trueCasePathSyncMock.mockImplementation(() => {
+        throw new Error('ENOENT')
+      })
 
       await parser['parseSrc'](filepath, true)
 
@@ -241,7 +251,7 @@ describe('Parser', () => {
       jest.spyOn(parser as any, 'stripPath').mockReturnValue({ fullPath: '/path/to/file.src', relPath: 'file.src' })
       const parseSpecial = jest.spyOn(parser as any, 'parseSpecial').mockImplementation()
 
-      fsExistsSyncMock.mockReturnValue(true)
+      trueCasePathSyncMock.mockImplementation((path) => String(path))
       fsReadFileSyncMock.mockReturnValue('non-path\n')
 
       await parser['parseSrc'](filepath, true)
@@ -254,35 +264,13 @@ describe('Parser', () => {
       const filepath = '/path/to/file.src'
       const parser = new Parser(patchName, filepath)
 
-      fsExistsSyncMock.mockReturnValue(true)
+      trueCasePathSyncMock.mockImplementation((path) => String(path))
       fsReadFileSyncMock.mockReturnValue('some/path/*\n')
 
       await expect(parser['parseSrc'](filepath, true)).rejects.toThrow('Wildcards are not supported')
 
-      expect(fsReadFileSyncMock).toHaveBeenCalledWith(filepath, 'ascii')
+      expect(fsReadFileSyncMock).toHaveBeenCalledWith('/path/to/file.src', 'ascii')
       expect(fsReadFileSyncMock).toHaveReturnedWith('some/path/*\n')
-    })
-
-    it('should resolve wildcards when for excluded sources', async () => {
-      const patchName = 'test'
-      const filepath = 'path/to/file.src'
-      const parser = new Parser(patchName, filepath)
-
-      fsExistsSyncMock.mockReturnValue(true)
-      fsReadFileSyncMock.mockReturnValue('some/path/*\n')
-      jest.spyOn(posix, 'join')
-      jest.spyOn(glob, 'create').mockResolvedValue({ glob: async () => ['some/path/glob.ext'] } as glob.Globber)
-
-      await parser['parseSrc'](filepath, false, true)
-
-      expect(posix.join).toHaveBeenCalledWith('path/to', 'some/path/*')
-      expect(fsExistsSyncMock).toHaveBeenCalledWith(filepath)
-      expect(fsReadFileSyncMock).toHaveBeenCalledWith(filepath, 'ascii')
-      expect(glob.create).toHaveBeenCalledWith('path/to/some/path/*')
-      expect(posix.join).toHaveBeenCalledWith('path/to', 'some/path/glob.ext')
-      expect(parser.filelist).toEqual([])
-      expect(parser.symbolTable).toEqual([])
-      expect(parser.referenceTable).toEqual([])
     })
   })
 
@@ -295,7 +283,7 @@ describe('Parser', () => {
       const parser = new Parser(patchName, filepath, workingDir)
 
       const stripPath = jest.spyOn(parser as any, 'stripPath')
-      fsExistsSyncMock.mockReturnValue(true)
+      trueCasePathSyncMock.mockImplementation((path) => '/path/' + String(path))
       fsReadFileSyncMock.mockReturnValueOnce('const int Symbol1 = 0;')
 
       parser['parseD'](filepath, true)
@@ -316,7 +304,7 @@ describe('Parser', () => {
       const parser = new Parser(patchName, filepath, workingDir)
 
       const stripPath = jest.spyOn(parser as any, 'stripPath')
-      fsExistsSyncMock.mockReturnValue(true)
+      trueCasePathSyncMock.mockImplementation((path) => '/path/' + String(path))
       fsReadFileSyncMock.mockReturnValueOnce('const int Symbol1 = 0;')
 
       parser['parseD'](filepath, false)
@@ -329,25 +317,14 @@ describe('Parser', () => {
       expect(parser.referenceTable).toEqual([])
     })
 
-    it('should not parse the file if it has an invalid extension', () => {
-      const patchName = 'test'
-      const filepath = '/path/to/file.txt'
-      const parser = new Parser(patchName, filepath)
-
-      parser['parseD'](filepath)
-
-      expect(fsReadFileSyncMock).not.toHaveBeenCalled()
-      expect(parser.filelist).toEqual([])
-      expect(parser.symbolTable).toEqual([])
-      expect(parser.referenceTable).toEqual([])
-    })
-
     it('should not parse the file if it does not exist', () => {
       const patchName = 'test'
       const filepath = '/path/to/nonexistent.d'
       const parser = new Parser(patchName, filepath)
 
-      fsExistsSyncMock.mockReturnValue(false)
+      trueCasePathSyncMock.mockImplementation(() => {
+        throw new Error('ENOENT')
+      })
 
       parser['parseD'](filepath)
 
@@ -359,12 +336,13 @@ describe('Parser', () => {
 
     it('should not parse the file twice', () => {
       const patchName = 'test'
+      const workingDir = '/path/'
       const filepath = '/path/to/file.d'
-      const relPath = 'path/to/file.d'
-      const parser = new Parser(patchName, filepath)
+      const relPath = 'to/file.d'
+      const parser = new Parser(patchName, filepath, workingDir)
 
       const stripPath = jest.spyOn(parser as any, 'stripPath')
-      fsExistsSyncMock.mockReturnValue(true)
+      trueCasePathSyncMock.mockImplementation((path) => String(path))
       ;(parser as any).filelist = [relPath]
 
       parser['parseD'](filepath)
@@ -430,6 +408,7 @@ func void Symbol11(var int Symbol12, var string Symbol13, var Symbol5 Symbol14) 
   Symbol4[0] = 0; // Assignment
   var Symbol5 Symbol21; // Indentifier declaration
   Symbol21.Symbol6 = 0; // Member assignment
+  Symbol11(Symbol15); // Function call (syntactically incorrect)
 };
 `
       parser['parseStr'](input, relPath)
@@ -482,6 +461,8 @@ func void Symbol11(var int Symbol12, var string Symbol13, var Symbol5 Symbol14) 
         { name: 'SYMBOL11.SYMBOL3', file: 'file.d', line: 29 },
         { name: 'SYMBOL11.SYMBOL4', file: 'file.d', line: 30 },
         { name: 'SYMBOL11.SYMBOL21.SYMBOL6', file: 'file.d', line: 32 },
+        { name: 'SYMBOL11', file: 'file.d', line: 33 },
+        { name: 'SYMBOL11.SYMBOL15', file: 'file.d', line: 33 },
       ])
     })
   })
@@ -756,16 +737,21 @@ func void Symbol11(var int Symbol12, var string Symbol13, var Symbol5 Symbol14) 
   })
 
   describe('parseSpecial', () => {
-    beforeEach(() => {
-      ioMkdirPMock = jest.spyOn(io, 'mkdirP').mockResolvedValue()
-      ioRmRFMock = jest.spyOn(io, 'rmRF').mockResolvedValue()
-      tcDownloadToolMock = jest.spyOn(tc, 'downloadTool')
-      tcExtractTarMock = jest.spyOn(tc, 'extractTar')
-
+    beforeAll(async () => {
       // Fix path in environment variables
       if (!('PATH' in process.env) && 'Path' in process.env) {
         jest.replaceProperty(process, 'env', { ...process.env, PATH: process.env['Path'] })
       }
+
+      const tmpDir = posix.join(os.tmpdir(), '.patch-validator-tmp')
+      jest.replaceProperty(process, 'env', { ...process.env, RUNNER_TEMP: tmpDir })
+
+      await Parser.downloadSpecial()
+    })
+
+    beforeEach(() => {
+      const tmpDir = posix.join(os.tmpdir(), '.patch-validator-tmp')
+      jest.replaceProperty(process, 'env', { ...process.env, RUNNER_TEMP: tmpDir })
     })
 
     afterAll(async () => {
@@ -780,8 +766,6 @@ func void Symbol11(var int Symbol12, var string Symbol13, var Symbol5 Symbol14) 
       const parser = new Parser(patchName, filepath)
 
       jest.replaceProperty(process, 'env', { ...process.env, RUNNER_TEMP: undefined })
-      tcDownloadToolMock.mockResolvedValue('/path/to/ikarus.tar.gz')
-      tcExtractTarMock.mockResolvedValue('/path/to/ikarus')
       const posixJoin = jest.spyOn(posix, 'join')
       const parseSrc = jest.spyOn(parser as any, 'parseSrc').mockImplementation()
       ;(parser as any)['type'] = 'CONTENT'
@@ -789,10 +773,6 @@ func void Symbol11(var int Symbol12, var string Symbol13, var Symbol5 Symbol14) 
       await parser['parseSpecial']('Ikarus')
 
       expect(posixJoin).toHaveBeenCalledWith(expect.stringMatching(/\.patch-validator-special$/), 'Ikarus-gameversions', 'Ikarus_G1.src')
-      expect(tcDownloadToolMock).toHaveBeenCalledWith('https://github.com/Lehona/Ikarus/archive/refs/heads/gameversions.tar.gz')
-      expect(ioMkdirPMock).toHaveBeenCalledWith(expect.stringMatching(/\.patch-validator-special$/))
-      expect(tcExtractTarMock).toHaveBeenCalledWith('/path/to/ikarus.tar.gz', expect.stringMatching(/\.patch-validator-special$/))
-      expect(ioRmRFMock).toHaveBeenCalledWith('/path/to/ikarus.tar.gz')
       expect(parseSrc).toHaveBeenCalledWith(
         expect.stringMatching(/\.patch-validator-special\/Ikarus-gameversions\/Ikarus_G1.src$/),
         false,
@@ -829,17 +809,11 @@ func void Symbol11(var int Symbol12, var string Symbol13, var Symbol5 Symbol14) 
 
       const posixJoin = jest.spyOn(posix, 'join')
       const parseSrc = jest.spyOn(parser as any, 'parseSrc').mockImplementation()
-      tcDownloadToolMock.mockResolvedValue('/path/to/lego.tar.gz')
-      tcExtractTarMock.mockResolvedValue('/path/to/lego')
       ;(parser as any)['type'] = 'CONTENT'
       ;(parser as any)['version'] = 2
       await parser['parseSpecial']('LeGo')
 
       expect(posixJoin).toHaveBeenCalledWith(expect.stringMatching(/\.patch-validator-special$/), 'LeGo-gameversions', 'Header_G2.src')
-      expect(tcDownloadToolMock).toHaveBeenCalledWith('https://github.com/Lehona/LeGo/archive/refs/heads/gameversions.tar.gz')
-      expect(ioMkdirPMock).toHaveBeenCalledWith(expect.stringMatching(/\.patch-validator-special$/))
-      expect(tcExtractTarMock).toHaveBeenCalledWith('/path/to/lego.tar.gz', expect.stringMatching(/\.patch-validator-special$/))
-      expect(ioRmRFMock).toHaveBeenCalledWith('/path/to/lego.tar.gz')
       expect(parseSrc).toHaveBeenCalledWith(
         expect.stringMatching(/\.patch-validator-special\/LeGo-gameversions\/Header_G2.src$/),
         false,
@@ -882,14 +856,6 @@ func void Symbol11(var int Symbol12, var string Symbol13, var Symbol5 Symbol14) 
       const filepath = '/path/to/Content_G130.src'
       const parser = new Parser(patchName, filepath)
 
-      ioMkdirPMock.mockRestore()
-      ioRmRFMock.mockRestore()
-      tcDownloadToolMock.mockRestore()
-      tcExtractTarMock.mockRestore()
-
-      const tmpDir = posix.join(os.tmpdir(), '.patch-validator-tmp')
-      jest.replaceProperty(process, 'env', { ...process.env, RUNNER_TEMP: tmpDir })
-
       await parser['parseSpecial']('Ikarus')
 
       expect(parser.symbolTable.length).toBeGreaterThan(5000)
@@ -903,14 +869,6 @@ func void Symbol11(var int Symbol12, var string Symbol13, var Symbol5 Symbol14) 
       const patchName = 'test'
       const filepath = '/path/to/Content_G112.src'
       const parser = new Parser(patchName, filepath)
-
-      ioMkdirPMock.mockRestore()
-      ioRmRFMock.mockRestore()
-      tcDownloadToolMock.mockRestore()
-      tcExtractTarMock.mockRestore()
-
-      const tmpDir = posix.join(os.tmpdir(), '.patch-validator-tmp')
-      jest.replaceProperty(process, 'env', { ...process.env, RUNNER_TEMP: tmpDir })
 
       await parser['parseSpecial']('LeGo')
 

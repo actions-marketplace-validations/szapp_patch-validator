@@ -2,24 +2,26 @@ import * as core from '@actions/core'
 import * as main from '../src/main.ts'
 import { Parser } from '../src/parser.ts'
 import * as inputs from '../src/inputs.ts'
-import write from '../src/write.ts'
+import write, { Annotation } from '../src/write.ts'
 import * as cleanup from '../src/cleanup.ts'
 
 let runMock: jest.SpiedFunction<typeof main.run>
 
 describe('run', () => {
   beforeEach(() => {
+    jest.spyOn(Parser, 'downloadSpecial').mockResolvedValue()
     jest
       .spyOn(inputs, 'loadInputs')
       .mockReturnValue({ workingDir: '', basePath: '', patchName: '', prefixList: [], ignoreListDecl: [], ignoreListRsc: [] })
     jest.spyOn(inputs, 'formatFilters').mockReturnValue({ prefix: [], ignoreDecl: [], ignoreRsc: [] })
     jest.spyOn(Parser, 'from').mockResolvedValue([new Parser('', '')])
     jest.spyOn(write, 'createCheckRun').mockResolvedValue({ details_url: '', check_id: 0 })
-    jest.spyOn(write, 'annotations').mockResolvedValue([])
+    jest.spyOn(write, 'annotations').mockResolvedValue([{} as Annotation])
     jest.spyOn(write, 'summary').mockImplementation()
     jest.spyOn(cleanup, 'workflow').mockResolvedValue(false)
     jest.spyOn(core, 'setFailed').mockImplementation()
     jest.spyOn(core, 'error').mockImplementation()
+    jest.spyOn(core, 'debug').mockImplementation()
     runMock = jest.spyOn(main, 'run')
   })
 
@@ -27,6 +29,7 @@ describe('run', () => {
     const result = await main.run(true)
     expect(runMock).toHaveReturned()
     expect(cleanup.workflow).toHaveBeenCalledTimes(1)
+    expect(Parser.downloadSpecial).toHaveBeenCalledTimes(1)
     expect(inputs.loadInputs).toHaveBeenCalledTimes(1)
     expect(inputs.formatFilters).toHaveBeenCalledTimes(1)
     expect(Parser.from).toHaveBeenCalledTimes(1)
@@ -34,7 +37,8 @@ describe('run', () => {
     expect(write.annotations).toHaveBeenCalledTimes(1)
     expect(write.summary).toHaveBeenCalledTimes(1)
     expect(core.setFailed).not.toHaveBeenCalled()
-    expect(result).toMatchObject({ summary: undefined, annotations: [] })
+    expect(result).toMatchObject({ summary: undefined, annotations: [{} as Annotation] })
+    expect(process.exitCode).toBe(core.ExitCode.Failure)
   })
 
   it('should run the cleanup function and return', async () => {
@@ -42,6 +46,7 @@ describe('run', () => {
     await main.run(true)
     expect(runMock).toHaveReturned()
     expect(cleanup.workflow).toHaveBeenCalledTimes(1)
+    expect(Parser.downloadSpecial).not.toHaveBeenCalled()
     expect(inputs.loadInputs).not.toHaveBeenCalled()
     expect(inputs.formatFilters).not.toHaveBeenCalled()
     expect(Parser.from).not.toHaveBeenCalled()
@@ -59,6 +64,7 @@ describe('run', () => {
     await main.run(true)
     expect(runMock).toHaveReturned()
     expect(cleanup.workflow).toThrow('test error')
+    expect(Parser.downloadSpecial).not.toHaveBeenCalled()
     expect(inputs.loadInputs).not.toHaveBeenCalled()
     expect(inputs.formatFilters).not.toHaveBeenCalled()
     expect(Parser.from).not.toHaveBeenCalled()
@@ -78,6 +84,7 @@ describe('run', () => {
     await main.run(true)
     expect(runMock).toHaveReturned()
     expect(cleanup.workflow).toThrow('test error')
+    expect(Parser.downloadSpecial).not.toHaveBeenCalled()
     expect(inputs.loadInputs).not.toHaveBeenCalled()
     expect(inputs.formatFilters).not.toHaveBeenCalled()
     expect(Parser.from).not.toHaveBeenCalled()
@@ -100,6 +107,7 @@ describe('run', () => {
 
     expect(runMock).toHaveReturned()
     expect(cleanup.workflow).not.toHaveBeenCalled()
+    expect(Parser.downloadSpecial).toHaveBeenCalledTimes(1)
     expect(inputs.loadInputs).toThrow('test error')
     expect(console.error).toHaveBeenCalledWith('test error')
     expect(inputs.formatFilters).not.toHaveBeenCalled()

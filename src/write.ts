@@ -5,6 +5,37 @@ import { formatDuration } from './utils.js'
 import { Resource } from './resources.js'
 import fs from 'fs'
 
+const commonClasses = [
+  'C_MISSION',
+  'C_FOCUS',
+  'C_ITEMREACT',
+  'C_SPELL',
+  'C_SVM',
+  'C_GILVALUES',
+  'C_FIGHTAI',
+  'CCAMSYS',
+  'C_MENU_ITEM',
+  'C_MENU',
+  'C_PARTICLEFXEMITKEY',
+  'CFX_BASE',
+  'C_SFX',
+  'C_SNDSYS_CFG',
+  'C_MUSICSYS_CFG',
+  'C_MUSICTHEME',
+  'C_MUSICJINGLE',
+]
+const commonPrototypes = [
+  'NPC_DEFAULT',
+  'C_SPELL_PROTO',
+  'CCAMSYS_DEF',
+  'C_MENU_ITEM_DEF',
+  'C_MENU_DEF',
+  'C_MUSICTHEME_DEF',
+  'C_MUSICJINGLE_DEF',
+  'C_SFX_DEF',
+  'CFX_BASE_PROTO',
+]
+
 export type Annotation = {
   path: string
   start_line: number
@@ -43,10 +74,13 @@ export async function annotations(
   write: boolean = true
 ): Promise<Annotation[]> {
   // List first few prefixes
-  const prefixes = prefix.slice(0, 3).join(', ')
+  const prefixes = prefix
+    .slice(0, 3)
+    .map((s) => `${s}_`)
+    .join(', ')
 
   // Make a list of annotations
-  const annotations = parsers
+  let annotations = parsers
     .map((p) => {
       // Naming violations
       const nameVio = p.namingViolations.map((v) => {
@@ -59,28 +93,67 @@ export async function annotations(
           annotation_level: 'failure',
           title: `Naming convention violation: ${v.name}`,
           message: `The symbol "${v.name}" poses a compatibility risk. Add a prefix to its name (e.g. ${prefixes}). If overwriting this symbol is intended, add it to the ignore list.`,
-          raw_details: context.replace(new RegExp(`(?<![\\d\\w_])(${v.name})(?![\\d\\w_])`, 'gi'), `${prefix[0]}$1`),
+          raw_details: context.replace(new RegExp(`(?<![\\d\\w_])(${v.name})(?![\\d\\w_])`, 'gi'), `${prefix[0]}_$1`),
         } as Annotation
       })
 
       // Reference violations
-      const refVio = p.referenceViolations.map(
-        (v) =>
-          ({
-            path: v.file,
-            start_line: v.line,
-            end_line: v.line,
-            annotation_level: 'failure',
-            title: `Reference violation: ${v.name}`,
-            message: `The symbol "${v.name}" might not exist ("Unknown identifier"). Reference only symbols that are declared in the patch or safely search for other symbols by their name.`,
-            raw_details: `if (MEM_FindParserSymbol("${v.name}") != -1) {
+      const refVio = p.referenceViolations.map((v) => {
+        let raw_details: string
+        let suggestion: string
+        if (commonClasses.includes(v.name)) {
+          // Check for common classes and suggest a fix
+          suggestion =
+            'Although that class is very standard, it technically does not have to exist or might even have a different name!\nIt is safer to define a copy of that class and use that instead to ensure compatibility.'
+          raw_details = `// Copy of ${v.name} to ensure it exists
+class ${prefix[0]}_${v.name} {
+    // ...
+};`
+        } else if (commonPrototypes.includes(v.name)) {
+          // Check for common protoypes and suggest a fix
+          suggestion =
+            'Although that prototype is very standard, it technically does not have to exist or might even have a different name!\nIt is safer to define a copy of the prototype and use that instead to ensure compatibility.'
+          raw_details = `// Copy of ${v.name} to ensure it exists
+prototype ${prefix[0]}_${v.name}( /* class name */ ) {
+    // ...
+};`
+        } else {
+          // Give general advice on how to handle unknown identifiers
+          suggestion = 'Reference only symbols that are declared in the patch or safely search for other symbols by their name.'
+          raw_details = `// If ${v.name} is a variable/constant
+if (MEM_FindParserSymbol("${v.name}") != -1) {
     var zCPar_Symbol symb; symb = _^(MEM_GetSymbol("${v.name}"));
     // Access content with symb.content
 } else {
     // Fallback to a default if the symbol does not exist
-};`,
-          }) as Annotation
-      )
+};
+
+// -----
+
+// OR: If ${v.name} is a function
+if (MEM_FindParserSymbol("${v.name}") != -1) {
+    // Push any necessary arguments onto the stack in the order of the function's parameters
+    //MEM_PushIntParam(1);
+    //MEM_PushInstParam(hero);
+    //MEM_PushStringParam("Hello world!");
+
+    // Call the function in a safe way
+    MEM_CallByString("${v.name}");
+} else {
+    // Optionally provide a fallback if the function does not exist
+};`
+        }
+
+        return {
+          path: v.file,
+          start_line: v.line,
+          end_line: v.line,
+          annotation_level: 'failure',
+          title: `Reference violation: ${v.name}`,
+          message: `The symbol "${v.name}" might not exist ("Unknown identifier").\n${suggestion}`,
+          raw_details,
+        } as Annotation
+      })
 
       // Overwrite violations
       const overVio = p.overwriteViolations.map(
@@ -122,7 +195,7 @@ export async function annotations(
               end_line: v.line,
               annotation_level: 'failure',
               title: `Naming convention violation: ${v.name}`,
-              message: `The resource file "${v.name}" poses a compatibility risk. Add a prefix to its name (e.g. ${prefixes}).`,
+              message: `The resource file "${v.name}" poses a compatibility risk. Add a prefix to its name (e.g. ${prefixes}). If overwriting this symbol is intended, add it to the ignore list.`,
             }) as Annotation
         )
 
@@ -131,6 +204,12 @@ export async function annotations(
       })
     )
     .flat()
+
+  // Remove duplicates
+  // Duplicate annotations occur when the same file is parsed across game versions (e.g. in Content_G1.src and Content_G2.src)
+  annotations = annotations.filter(
+    (v, i, a) => a.findIndex((t) => t.path === v.path && t.start_line === v.start_line && t.title === v.title) === i
+  )
 
   // Write to GitHub check run if enabled
   if (write) {
@@ -197,7 +276,7 @@ export async function summary(
     parsers.reduce((acc, p) => acc + p.namingViolations.length + p.referenceViolations.length + p.overwriteViolations.length, 0) +
     resources.reduce((acc, r) => acc + r.extViolations.length + r.nameViolations.length, 0)
   const numSymbolsFiles = parsers.reduce((acc, p) => acc + p.numSymbols, 0) + resources.reduce((acc, r) => acc + r.numFiles, 0)
-  const prefixList = prefixes.map((p) => `<code>${p}</code>`)
+  const prefixList = prefixes.map((p) => `<code>${p}_</code>`)
 
   // Construct summary
   core.summary.addTable([

@@ -16,12 +16,27 @@ export async function run(github: boolean = false): Promise<{ summary: string; a
     const startedAt = new Date()
     const startTime = performance.now()
 
+    // Download extras
+    await Parser.downloadSpecial()
+
     // Format inputs
     const { workingDir, basePath, patchName, prefixList, ignoreListDecl, ignoreListRsc } = loadInputs()
     const { prefix, ignoreDecl, ignoreRsc } = formatFilters(patchName, prefixList, ignoreListDecl, ignoreListRsc, basePath)
 
     // Collect symbol tables
     const parsers = await Parser.from(patchName, basePath, workingDir)
+
+    // Print debugging information
+    if (github) {
+      core.debug('Symbol tables:')
+      for (const parser of parsers) {
+        core.debug(`${parser.filename} (${parser.symbolTable.length} symbols)`)
+        core.debug('')
+        // istanbul ignore next
+        for (const { name } of parser.symbolTable) core.debug(name)
+        core.debug('')
+      }
+    }
 
     // Validate symbol tables
     for (const parser of parsers) {
@@ -41,12 +56,18 @@ export async function run(github: boolean = false): Promise<{ summary: string; a
     const summary = await write.summary(parsers, resources, prefix, duration, details_url, github)
     const annotations = await write.annotations(parsers, resources, prefix, check_id, summary, github)
 
+    // Update exit code
+    if (github && annotations.length > 0) {
+      process.exitCode = core.ExitCode.Failure
+    }
+
     // Return results
     return { summary, annotations }
   } catch (error) {
     const msg: string = error instanceof Error ? error.message : String(error)
     if (github) core.setFailed(msg)
     else console.error(msg)
+  } finally {
     await Parser.clearTmpDir()
   }
 }
