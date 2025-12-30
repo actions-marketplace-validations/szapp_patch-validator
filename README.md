@@ -25,8 +25,10 @@ on:
     paths:
       - '**.src'
       - '**.SRC'
+      - '**.Src'
       - '**.d'
       - '**.D'
+      - '**/_work/Data/**/*'
 
 # These permissions are necessary for creating the check runs
 permissions:
@@ -39,7 +41,7 @@ jobs:
     name: Run validator on scripts
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Check for validity
         uses: szapp/patch-validator@v1
         with:
@@ -112,8 +114,10 @@ on:
     paths:
       - '**.src'
       - '**.SRC'
+      - '**.Src'
       - '**.d'
       - '**.D'
+      - '**/_work/Data/**/*'
   check_run:
     types: completed
 
@@ -133,7 +137,7 @@ jobs:
         with:
           app-id: ${{ vars.APP_ID }} # GitHub App ID
           private-key: ${{ secrets.APP_KEY }} # GitHub App private key
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Check for validity
         uses: szapp/patch-validator@v1
         with:
